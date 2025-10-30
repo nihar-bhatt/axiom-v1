@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "axiom-v1"
+version = "0.1.0"
+description = "Axiom v1 — Hybrid Neural Theorem Prover"
+requires-python = ">=3.10"
+dependencies = [
+  "sympy>=1.12",
+  "tqdm>=4.66",
+  "regex>=2023.12.25",
+  "rank-bm25>=0.2.2",
+  "rapidfuzz>=3.9"
+]
+[tool.setuptools.packages.find]
+where = ["src"]
