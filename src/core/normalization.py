@@ -194,14 +194,12 @@ def _variables(text: str) -> List[str]:
             continue
         if len(tok) > 24: 
             continue
-        # drop obvious functions when followed immediately by '(' (handled by function_sig)
         cand.add(tok)
-    # keep single letters or mild decorations x1, a_n, x'
     keep = [t for t in cand if re.fullmatch(r"[A-Za-z]([0-9_']+)?", t) or len(t) == 1]
     return sorted(set(keep))
 def _norm_domain_token(tok: str) -> str:
     t = tok.strip().lower().replace(" ", "")
-    return DOMAIN_MAP.get(t, t)  # preserve unknown like "K", "F_p", "Z[i]"
+    return DOMAIN_MAP.get(t, t)
 def _assign_domains_from_phrase(text: str, variables: List[str], doms: Dict[str,str]) -> None:
     for pat,_ in PHRASE_PATTERNS:
         for m in pat.finditer(text):
@@ -230,12 +228,10 @@ def normalize_user_input(raw: str) -> "Normalized":
     if not raw:
         return Normalized("", [], [], [], [], [], [], [], None, None, None, [], {})
     s = _strip_latex(raw.strip())
-    # conservative typo fixes
     for pat, repl in CORRECTIONS:
         s = pat.sub(repl, s)
     s = _normalize_symbols(s)
     s = _clean_ws(s)
-    # light fuzzy fixes (tokens only, high cutoff)
     toks = [ _fuzzy_fix_token(t) for t in s.split() ]
     s = " ".join(toks)
     goal      = _infer_goal(s)
