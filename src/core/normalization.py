@@ -1,5 +1,6 @@
 from __future__ import annotations
 import re
+import difflib
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
 REL_MAP = {
@@ -21,7 +22,7 @@ LATEX_INLINES = [
     (re.compile(r"\\operatorname\{([^}]+)\}"), r"\1"),
     (re.compile(r"\\text\{([^}]+)\}"), r"\1"),
 ]
-DOMAIN_MAP = {
+DOMAIN_MAP: Dict[str, str] = {
     "r":"R","rr":"R","ℝ":"R","real":"R","reals":"R","realnumbers":"R",
     "q":"Q","qq":"Q","ℚ":"Q","rational":"Q","rationals":"Q",
     "z":"Z","zz":"Z","ℤ":"Z","integer":"Z","integers":"Z",
@@ -59,15 +60,15 @@ PHRASE_DOMAIN = {
 EQ_RE    = re.compile(r"(?P<lhs>[^=<>!≡]+)\s*(==|=)\s*(?P<rhs>[^;.,\n]+)")
 INEQ_RE  = re.compile(r"(?P<lhs>[^=<>!]+)\s*(<=|>=|<|>)\s*(?P<rhs>[^;.,\n]+)")
 CONG_RE  = re.compile(r"(?P<lhs>[^=≡]+)\s*≡\s*(?P<rhs>[^(\n;.,]+)\s*\(mod\s*(?P<mod>[^)]+)\)", re.I)
-DIV_RE   = re.compile(r"\b(?P<a>[a-zA-Z0-9\)\]]+)\s*\|\s*(?P<b>[a-zA-Z0-9\(\[]+)\b")
+DIV_RE   = re.compile(r"\b(?P<a>[A-Za-z0-9\)\]]+)\s*\|\s*(?P<b>[A-Za-z0-9\(\[]+)\b")
 IN_PATTERNS = [
-    re.compile(r"\b([a-z](?:\s*,\s*[a-z])*)\s*∈\s*([A-Za-zℝℤℚℕℂP\+\>\=\d^ _\[\]()/]+)", re.I),
-    re.compile(r"\b([a-z](?:\s*,\s*[a-z])*)\s+in\s+([A-Za-zℝℤℚℕℂP\+\>\=\d^ _\[\]()/]+)", re.I),
+    re.compile(r"\b([A-Za-z](?:\s*,\s*[A-Za-z])*)\s*∈\s*([A-Za-zℝℤℚℕℂP\+\>\=\d^ _\[\]()/]+)", re.I),
+    re.compile(r"\b([A-Za-z](?:\s*,\s*[A-Za-z])*)\s+in\s+([A-Za-zℝℤℚℕℂP\+\>\=\d^ _\[\]()/]+)", re.I),
 ]
 PHRASE_PATTERNS = [
-    (re.compile(r"\b([a-z](?:\s*,\s*[a-z])*)\s+are\s+(?P<dom>integers|rationals|reals|naturals|complex|primes)\b", re.I), "are"),
-    (re.compile(r"\b([a-z])\s+is\s+(?P<dom>integer|rational|real|natural|complex|prime)\b", re.I), "is"),
-    (re.compile(r"\b([a-z])\s+(?P<dom>complex|prime|integer|rational|real|natural)\b", re.I), "bare"),
+    (re.compile(r"\b([A-Za-z](?:\s*,\s*[A-Za-z])*)\s+are\s+(?P<dom>integers|rationals|reals|naturals|complex|primes)\b", re.I), "are"),
+    (re.compile(r"\b([A-Za-z])\s+is\s+(?P<dom>integer|rational|real|natural|complex|prime)\b", re.I), "is"),
+    (re.compile(r"\b([A-Za-z])\s+(?P<dom>complex|prime|integer|rational|real|natural)\b", re.I), "bare"),
 ]
 SIG_RE = re.compile(r"([A-Za-z])\s*[:∶]\s*([^\s-]+)\s*[-–—]?>\s*([^\s.,;]+)")
 FORALL_RE = re.compile(r"\bfor all\b|\bfor any\b|\bfor every\b", re.I)
@@ -93,6 +94,14 @@ CORRECTIONS = [
     (re.compile(r"\bdoin\b", re.I), "is an"),
     (re.compile(r"\biff\b", re.I), "<->"),
 ]
+VOCAB = [
+    "prove","show","determine","compute","integer","integers","rational","rationals",
+    "real","reals","natural","naturals","complex","prime","primes","mod","congruent",
+    "there","exists","for","all","any","every","such","that","where","assume","suppose","let","then"
+]
+def _fuzzy_fix_token(tok: str) -> str:
+    cand = difflib.get_close_matches(tok, VOCAB, n=1, cutoff=0.86)
+    return cand[0] if cand else tok
 @dataclass
 class Normalized:
     clean_text: str
@@ -152,11 +161,7 @@ def _dedupe(xs: List[str]) -> List[str]:
 def _extract_equations(text: str) -> List[str]:
     return [f"{m.group('lhs').strip()} = {m.group('rhs').strip()}" for m in EQ_RE.finditer(text)]
 def _extract_inequalities(text: str) -> List[str]:
-    out = []
-    for m in INEQ_RE.finditer(text):
-        full = m.group(0).strip()
-        out.append(full)
-    return out
+    return [m.group(0).strip() for m in INEQ_RE.finditer(text)]
 def _extract_congruences(text: str) -> List[str]:
     return [f"{m.group('lhs').strip()} ≡ {m.group('rhs').strip()} (mod {m.group('mod').strip()})"
             for m in CONG_RE.finditer(text)]
@@ -174,11 +179,29 @@ def _detect_structures(text: str) -> List[str]:
         for _ in pat.finditer(text):
             found.append(tag)
     return _dedupe(found)
+KEYWORDS = set("""
+prove show determine compute integer integers rational rationals real reals
+natural naturals complex primes prime such that where and or iff if then let suppose assume
+there exists for all any every mod congruent
+""".split())
+VAR_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_']*)\b")
 def _variables(text: str) -> List[str]:
-    return sorted(set(re.findall(r"\b[a-z]\b", text)))
+    cand: set[str] = set()
+    for m in VAR_RE.finditer(text):
+        tok = m.group(1)
+        low = tok.lower()
+        if low in KEYWORDS: 
+            continue
+        if len(tok) > 24: 
+            continue
+        # drop obvious functions when followed immediately by '(' (handled by function_sig)
+        cand.add(tok)
+    # keep single letters or mild decorations x1, a_n, x'
+    keep = [t for t in cand if re.fullmatch(r"[A-Za-z]([0-9_']+)?", t) or len(t) == 1]
+    return sorted(set(keep))
 def _norm_domain_token(tok: str) -> str:
     t = tok.strip().lower().replace(" ", "")
-    return DOMAIN_MAP.get(t, t)  # preserve unknown like "K" (field parameter)
+    return DOMAIN_MAP.get(t, t)  # preserve unknown like "K", "F_p", "Z[i]"
 def _assign_domains_from_phrase(text: str, variables: List[str], doms: Dict[str,str]) -> None:
     for pat,_ in PHRASE_PATTERNS:
         for m in pat.finditer(text):
@@ -207,10 +230,14 @@ def normalize_user_input(raw: str) -> "Normalized":
     if not raw:
         return Normalized("", [], [], [], [], [], [], [], None, None, None, [], {})
     s = _strip_latex(raw.strip())
+    # conservative typo fixes
     for pat, repl in CORRECTIONS:
         s = pat.sub(repl, s)
     s = _normalize_symbols(s)
     s = _clean_ws(s)
+    # light fuzzy fixes (tokens only, high cutoff)
+    toks = [ _fuzzy_fix_token(t) for t in s.split() ]
+    s = " ".join(toks)
     goal      = _infer_goal(s)
     f_sig     = _function_signature(s)
     sents     = sentence_split(s)
