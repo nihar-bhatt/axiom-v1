@@ -74,10 +74,18 @@ PHRASE_DOMAIN = {
 }
 
 # --- structural patterns ------------------------------------------------------
+# Equations: anything of the form lhs = rhs, we post-process lhs later.
+EQ_RE = re.compile(r"(?P<lhs>[^=<>!≡]+)\s*(==|=)\s*(?P<rhs>[^;.,\n]+)")
 
-EQ_RE    = re.compile(r"(?P<lhs>[^=<>!≡]+)\s*(==|=)\s*(?P<rhs>[^;.,\n]+)")
-INEQ_RE  = re.compile(r"(?P<lhs>[^=<>!]+)\s*(<=|>=|<|>)\s*(?P<rhs>[^;.,\n]+)")
-CONG_RE  = re.compile(r"(?P<lhs>[^=≡]+)\s*≡\s*(?P<rhs>[^(\n;.,]+)\s*\(mod\s*(?P<mod>[^)]+)\)", re.I)
+# Inequalities: ensure the comparison sign is not the '>' of an arrow "->"
+INEQ_RE = re.compile(
+    r"(?P<lhs>[^=<>!]+?)\s*(?<!-)(<=|>=|<|>)\s*(?P<rhs>[^;.,\n]+)"
+)
+
+CONG_RE  = re.compile(
+    r"(?P<lhs>[^=≡]+)\s*≡\s*(?P<rhs>[^(\n;.,]+)\s*\(mod\s*(?P<mod>[^)]+)\)",
+    re.I,
+)
 DIV_RE   = re.compile(r"\b(?P<a>[A-Za-z0-9\)\]]+)\s*\|\s*(?P<b>[A-Za-z0-9\(\[]+)\b")
 
 IN_PATTERNS = [
@@ -91,7 +99,11 @@ PHRASE_PATTERNS = [
     (re.compile(r"\b([A-Za-z])\s+(?P<dom>complex|prime|integer|rational|real|natural)\b", re.I), "bare"),
 ]
 
-SIG_RE     = re.compile(r"([A-Za-z])\s*[:∶]\s*([^\s-]+)\s*[-–—]?>\s*([^\s.,;]+)")
+# Function signatures: f : R -> R, f:ℝ→ℝ, etc.
+SIG_RE = re.compile(
+    r"\b([A-Za-z])\s*[:∶]\s*([A-Za-zℝℤℚℕℂ]+)\s*[-–—]?>\s*([A-Za-zℝℤℚℕℂ]+)\b"
+)
+
 FORALL_RE  = re.compile(r"\bfor all\b|\bfor any\b|\bfor every\b", re.I)
 EXISTS_RE  = re.compile(r"\bthere (exists|is)\b|\bfind\b|\bdetermine\b|\bcompute\b", re.I)
 INTERVAL_RE = re.compile(r"([\(\[])\s*([^,\s]+)\s*,\s*([^)\]\s]+)\s*([\)\]])")
@@ -106,6 +118,9 @@ STRUCT_PATTERNS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"\bR\^(\d+)\b", re.I), "R^n"),
     (re.compile(r"\bC\^(\d+)\b", re.I), "C^n"),
 ]
+
+# For trimming the left-hand side of equations down to the last expression
+LEFT_EXPR_RE = re.compile(r"([A-Za-z0-9\)\]](?:[^=<>!≡;.,\n])*)$")
 
 CORRECTIONS = [
     (re.compile(r"\bninter\b", re.I), "n ∈ Z"),
@@ -154,7 +169,7 @@ class Normalized:
 # --- pipeline helpers ---------------------------------------------------------
 
 def _strip_latex(s: str) -> str:
-    """Remove simple LaTeX wrappers and common \mathbb forms."""
+    """Remove simple LaTeX wrappers and common \\mathbb forms."""
     for pat, repl in LATEX_INLINES:
         s = pat.sub(repl, s)
     s = (s.replace(r"\mathbb{R}", "R")
@@ -188,43 +203,88 @@ def sentence_split(text: str) -> List[str]:
 def _infer_goal(text: str) -> Optional[str]:
     """Detect top-level task intent: prove / show / find / nonexistence."""
     tl = text.lower()
-    if "prove that" in tl or tl.startswith("prove ") or " prove " in tl: return "prove"
-    if "show that" in tl or tl.startswith("show "): return "show"
-    if "find " in tl or "determine " in tl or "compute " in tl: return "find"
-    if "no such" in tl or "does not exist" in tl or "nonexist" in tl: return "prove nonexistence"
+    if "prove that" in tl or tl.startswith("prove ") or " prove " in tl:
+        return "prove"
+    if "show that" in tl or tl.startswith("show "):
+        return "show"
+    if "find " in tl or "determine " in tl or "compute " in tl:
+        return "find"
+    if "no such" in tl or "does not exist" in tl or "nonexist" in tl:
+        return "prove nonexistence"
     return None
 
+def _norm_domain_token(tok: str) -> str:
+    """Normalize a domain token to a canonical tag when known; otherwise leave it."""
+    t = tok.strip().lower().replace(" ", "")
+    return DOMAIN_MAP.get(t, t)
+
 def _function_signature(text: str) -> Optional[str]:
-    """Extract function signature f:A->B when present."""
-    m = SIG_RE.search(text.replace(" ", ""))
-    if m: return f"{m.group(1)}: {m.group(2)} -> {m.group(3)}"
-    return None
+    """
+    Extract function signature f:A->B when present.
+    Also canonicalize A,B using DOMAIN_MAP when possible.
+    """
+    m = SIG_RE.search(text)
+    if not m:
+        return None
+    f = m.group(1)
+    dom = _norm_domain_token(m.group(2))
+    cod = _norm_domain_token(m.group(3))
+    return f"{f}: {dom} -> {cod}"
 
 def _dedupe(xs: List[str]) -> List[str]:
     """Preserve order while removing duplicates."""
     seen, out = set(), []
     for x in xs:
         if x not in seen:
-            out.append(x); seen.add(x)
+            out.append(x)
+            seen.add(x)
     return out
 
 # --- extract structural items -------------------------------------------------
 
 def _extract_equations(text: str) -> List[str]:
-    return [f"{m.group('lhs').strip()} = {m.group('rhs').strip()}" for m in EQ_RE.finditer(text)]
+    """
+    Extract equations and trim the left side down to the last expression before '='.
+    Example:
+      'Let f: R->R be continuous. Show that f(x+y)=f(x)f(y).'
+      -> 'f(x+y) = f(x)f(y)'
+    """
+    out: List[str] = []
+    for m in EQ_RE.finditer(text):
+        full = text[m.start():m.end()]          # like '... f(x+y) = f(x)f(y)'
+        eq_pos = full.find("=")
+        if eq_pos == -1:
+            continue
+        left_text = full[:eq_pos]
+        right_text = full[eq_pos + 1 :]
+
+        # Try to keep only the last expression on the left
+        lhs = left_text.strip()
+        mm = LEFT_EXPR_RE.search(left_text)
+        if mm:
+            lhs = mm.group(1).strip()
+
+        # Strip obvious trailing noise on the right
+        rhs = right_text.strip().rstrip(" .;,")
+        if lhs and rhs:
+            out.append(f"{lhs} = {rhs}")
+    return out
 
 def _extract_inequalities(text: str) -> List[str]:
+    """Extract well-formed inequalities, ignoring the '>' in arrows like '->'."""
     return [m.group(0).strip() for m in INEQ_RE.finditer(text)]
 
 def _extract_congruences(text: str) -> List[str]:
-    return [f"{m.group('lhs').strip()} ≡ {m.group('rhs').strip()} (mod {m.group('mod').strip()})"
-            for m in CONG_RE.finditer(text)]
+    return [
+        f"{m.group('lhs').strip()} ≡ {m.group('rhs').strip()} (mod {m.group('mod').strip()})"
+        for m in CONG_RE.finditer(text)
+    ]
 
 def _extract_divisibility(text: str) -> List[str]:
     return [f"{m.group('a')} | {m.group('b')}" for m in DIV_RE.finditer(text)]
 
 def _extract_intervals(text: str) -> List[str]:
-    out = []
+    out: List[str] = []
     for m in INTERVAL_RE.finditer(text):
         l, a, b, r = m.groups()
         out.append(f"{l}{a},{b}{r}")
@@ -247,7 +307,7 @@ there exists for all any every mod congruent
 VAR_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_']*)\b")
 
 def _variables(text: str) -> List[str]:
-    """Collect plausible variable tokens, filtering out keywords and long words."""
+    """Collect plausible variable tokens, filtering out keywords and very long words."""
     cand: set[str] = set()
     for m in VAR_RE.finditer(text):
         tok = m.group(1)
@@ -257,14 +317,11 @@ def _variables(text: str) -> List[str]:
         if len(tok) > 24:
             continue
         cand.add(tok)
-    # Keep single letters or mild decorations x1, a_n, x'
-    keep = [t for t in cand if re.fullmatch(r"[A-Za-z]([0-9_']+)?", t) or len(t) == 1]
+    keep = [
+        t for t in cand
+        if re.fullmatch(r"[A-Za-z]([0-9_']+)?", t) or len(t) == 1
+    ]
     return sorted(set(keep))
-
-def _norm_domain_token(tok: str) -> str:
-    """Normalize a domain token to a canonical tag when known; otherwise leave it."""
-    t = tok.strip().lower().replace(" ", "")
-    return DOMAIN_MAP.get(t, t)
 
 def _assign_domains_from_phrase(text: str, variables: List[str], doms: Dict[str,str]) -> None:
     """Assign domains from 'x is integer' or 'x,y are reals' phrases."""
