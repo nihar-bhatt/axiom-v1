@@ -34,13 +34,19 @@ PAT_PARAM = [
     re.compile(r"\bthere\s+exists\s+([A-Za-z])\b", re.I),
     re.compile(r"\bfix\s+([A-Za-z])\b", re.I),
 ]
+
+# Match f : R -> R, f:ℝ→ℝ, etc.
 PAT_FUNC_SIG = [
-    re.compile(r"\b([A-Za-z])\s*[:∶]\s*([^\s-]+)\s*[-–—]?>\s*([^\s.,;]+)")
+    re.compile(
+        r"\b([A-Za-z])\s*[:∶]\s*([A-Za-zℝℤℚℕℂ]+)\s*[-–—]?>\s*([A-Za-zℝℤℚℕℂ]+)\b"
+    )
 ]
+
 PAT_PRIME = re.compile(r"\b([A-Za-z])\s+is\s+prime\b|\bprime\s+([A-Za-z])\b", re.I)
 PAT_SIGN  = re.compile(r"\b([A-Za-z])\s*>\s*0\b|\b([A-Za-z])\s*≥\s*0\b|\b([A-Za-z])\s*>=\s*0\b")
-PAT_DOMAIN_IN = re.compile(r"\b([A-Za-z](?:\s*,\s*[A-Za-z])*)\s*(?:∈|in)\s+([A-Za-z_][^,.;\s]*)")
-
+PAT_DOMAIN_IN = re.compile(
+    r"\b([A-Za-z](?:\s*,\s*[A-Za-z])*)\s*(?:∈|in)\s+([A-Za-z_][^,.;\s]*)"
+)
 
 @dataclass
 class Evidence:
@@ -48,7 +54,6 @@ class Evidence:
     source: str
     kind: str       # "builtin"|"decl"|"quantifier"|"constraint"|"domain"|"funcsig"
     weight: float = 1.0
-
 
 @dataclass
 class SymbolInfo:
@@ -85,7 +90,6 @@ class SymbolInfo:
                 "domain": 0.6, "constraint": 0.5, "funcsig": 0.5
             }.get(e.kind, 0.3) * e.weight
         self.confidence = min(1.0, score / (1.0 + 0.2 * len(self.evidence)))
-
 
 class SymbolTable:
     """Holds SymbolInfo per symbol and provides scanning methods to populate it."""
@@ -157,7 +161,7 @@ class SymbolTable:
     def scan_function_sigs(self, sent: str) -> None:
         """Mark f as a function if a signature f:A->B appears."""
         for pat in PAT_FUNC_SIG:
-            for m in pat.finditer(sent.replace(" ", "")):
+            for m in pat.finditer(sent):
                 f = m.group(1)
                 si = self.ensure(f)
                 si.set_role("function", "funcsig", 0.8)
@@ -176,7 +180,6 @@ class SymbolTable:
                 if si.role == "unknown":
                     si.set_role("variable", "default", 0.2)
         return self._tbl
-
 
 def build_symbol_table(sentences: List[str]) -> SymbolTable:
     """Run all scanners over the sentences and return the completed SymbolTable."""
