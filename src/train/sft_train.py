@@ -45,6 +45,8 @@ from transformers import (
 
 from peft import LoraConfig, get_peft_model
 
+import inspect
+
 
 
 def _last_assistant_index(messages: List[Dict[str, str]]) -> Optional[int]:
@@ -275,22 +277,29 @@ def main() -> None:
     bf16 = bool(use_cuda and torch.cuda.is_bf16_supported())
     fp16 = bool(use_cuda and not bf16)
 
-    targs = TrainingArguments(
+    targs_kwargs = dict(
         output_dir=args.output_dir,
         num_train_epochs=args.epochs,
         learning_rate=args.lr,
         per_device_train_batch_size=args.batch,
         gradient_accumulation_steps=args.grad_accum,
-        evaluation_strategy="steps",
         eval_steps=200,
         save_steps=200,
         logging_steps=20,
         save_total_limit=2,
         bf16=bf16,
         fp16=fp16,
-        report_to="none",  # keep it simple; you can enable wandb later
+        report_to="none",
         seed=args.seed,
     )
+
+    sig = inspect.signature(TrainingArguments.__init__)
+    if "eval_strategy" in sig.parameters:
+        targs_kwargs["eval_strategy"] = "steps"
+    else:
+        targs_kwargs["evaluation_strategy"] = "steps"
+
+    targs = TrainingArguments(**targs_kwargs)
 
     trainer = Trainer(
         model=model,
