@@ -232,10 +232,20 @@ def main() -> None:
     train_ds = split["train"]
     eval_ds = split["test"]
 
+    use_cuda = torch.cuda.is_available()
+    bf16 = bool(use_cuda and torch.cuda.is_bf16_supported())
+    fp16 = bool(use_cuda and not bf16)
+    dtype = torch.bfloat16 if bf16 else (torch.float16 if use_cuda else torch.float32)
+
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         trust_remote_code=args.trust_remote_code,
+        torch_dtype=dtype,
+        low_cpu_mem_usage=True,
     )
+
+    model.config.use_cache = False
+    model.gradient_checkpointing_enable()
 
     if hasattr(model.config, "use_cache"):
         model.config.use_cache = False
